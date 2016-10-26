@@ -3,6 +3,7 @@ package smtpsrv
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/smtp"
 	"reflect"
 	"testing"
@@ -104,4 +105,30 @@ func TestResponse(t *testing.T) {
 	if !reflect.DeepEqual(m, message) {
 		t.Fatal(fmt.Errorf("%t != %t", m, message))
 	}
+}
+
+func TestTimeout(t *testing.T) {
+	s, err := NewServer(&Config{
+		Addr:        "127.0.0.1:0",
+		ReadTimeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Connect to the server using its address
+	conn, err := net.Dial("tcp", s.listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := smtp.NewClient(conn, "localhost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Hang for 100ms to trigger the timeout
+	time.Sleep(100 * time.Millisecond)
+	conn.SetDeadline(time.Now().Add(100 * time.Millisecond))
+	if err := c.Hello("localhost"); err == nil {
+		t.Fatal(errors.New("timeout expected"))
+	}
+	s.Close(false)
 }
