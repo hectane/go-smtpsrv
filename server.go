@@ -17,14 +17,16 @@ type Server struct {
 
 	// Used for synchronizing shutdown - unfortunately, this is all necessary;
 	// the list monitors which clients are active so that shutdown can be
-	// performed upon request; the mutex guards access to the list
+	// performed upon request and the mutex guards access to the list
 	waitGroup      sync.WaitGroup
 	mutex          sync.Mutex
 	clients        []*Client
 	clientFinished chan *Client
 }
 
-// accept continues to receive incoming connections until shut down.
+// accept listens for new connections from clients. When one connects, a new
+// Client instance is created, it is added to the list, and the wait group is
+// incremented.
 func (s *Server) accept() {
 	for {
 		conn, err := s.listener.Accept()
@@ -41,7 +43,9 @@ func (s *Server) accept() {
 	s.finished <- true
 }
 
-// remove receives from the clientFinished channel.
+// remove watches for clients that have signalled that they are done and
+// removes them from the list of active clients. The wait group is also
+// decremented.
 func (s *Server) remove() {
 	for p := range s.clientFinished {
 		s.mutex.Lock()

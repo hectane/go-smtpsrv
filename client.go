@@ -156,12 +156,14 @@ func (c *Client) processQUIT() {
 // run greets the client and processes each of the commands transmitted in
 // turn until either the client disconnects or QUIT is issued.
 func (c *Client) run() {
+	defer func() {
+		c.finished <- c
+	}()
 	c.writeBanner()
-loop:
 	for {
 		l, err := c.readLine()
 		if err != nil {
-			break
+			return
 		}
 		var (
 			lineParts = bytes.SplitN(l, []byte(" "), 2)
@@ -186,13 +188,12 @@ loop:
 			c.processNOOP()
 		case "QUIT":
 			c.processQUIT()
-			break loop
+			c.conn.Close()
+			return
 		default:
 			c.writeReply(502, "unsupported command")
 		}
 	}
-	c.conn.Close()
-	c.finished <- c
 }
 
 // NewClient creates a new Client instance for interacting with an SMTP client

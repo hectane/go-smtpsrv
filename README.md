@@ -19,6 +19,6 @@ In order to receive connections, an instance of `Server` must be created and the
         panic(err)
     }
 
-To shut down the server, the `Stop()` method must be invoked.
+To shut down the server, the `Close()` method must be invoked.
 
-    server.Stop()
+    server.Close()
