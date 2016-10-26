@@ -95,4 +95,5 @@ func (s *Server) Close(force bool) {
 		s.mutex.Unlock()
 	}
 	s.waitGroup.Wait()
+	close(s.newMessage)
 }
