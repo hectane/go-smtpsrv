@@ -1,5 +1,6 @@
 ## go-smtpsrv
 
+[![Build Status](https://travis-ci.org/hectane/go-smtpsrv.svg?branch=master)](https://travis-ci.org/hectane/go-smtpsrv)
 [![GoDoc](https://godoc.org/github.com/hectane/go-smtpsrv?status.svg)](https://godoc.org/github.com/hectane/go-smtpsrv)
 [![MIT License](http://img.shields.io/badge/license-MIT-9370d8.svg?style=flat)](http://opensource.org/licenses/MIT)
 
