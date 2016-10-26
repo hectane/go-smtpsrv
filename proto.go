@@ -7,21 +7,35 @@ import (
 	"net"
 	"net/mail"
 	"strconv"
+	"strings"
+	"time"
 )
 
 // Proto facilitates communication with an SMTP client. Each instance maintains
 // state for and receives commands from a single client.
 type Proto struct {
-	conn     net.Conn
-	banner   string
-	mailFrom string
-	mailTo   []string
+	config     *Config
+	conn       net.Conn
+	reader     *bufio.Reader
+	newMessage chan<- *Message
+	mailFrom   string
+	mailTo     []string
 }
 
 // reset initializes all values to their defaults.
 func (p *Proto) reset() {
 	p.mailFrom = ""
 	p.mailTo = []string{}
+}
+
+// readLine obtains the next line from the client while observing the timeout.
+func (p *Proto) readLine() ([]byte, error) {
+	p.conn.SetReadDeadline(time.Now().Add(p.config.ReadTimeout))
+	line, isPrefix, err := p.reader.ReadLine()
+	if err != nil || isPrefix {
+		return nil, err
+	}
+	return line, nil
 }
 
 // writeReply contructs a reply from the reply code and message. The result is
@@ -33,7 +47,7 @@ func (p *Proto) writeReply(code int, message string) {
 // writeBanner sends the initial greeting to the client. The banner supplied by
 // the caller is combined with the name of this library.
 func (p *Proto) writeBanner() {
-	p.writeReply(220, fmt.Sprintf("%s [go-smtpsrv]", p.banner))
+	p.writeReply(220, fmt.Sprintf("%s [go-smtpsrv]", p.config.Banner))
 }
 
 // processHELO responds to HELO or EHLO commands from the client. At this
@@ -41,7 +55,7 @@ func (p *Proto) writeBanner() {
 // identical. The banner used in the greeting is repeated here.
 func (p *Proto) processHELO() {
 	p.reset()
-	p.writeReply(250, p.banner)
+	p.writeReply(250, p.config.Banner)
 }
 
 // processMail is invoked with the address the email is being sent *from*. This
@@ -91,7 +105,7 @@ func (p *Proto) processRCPT(b []byte) {
 }
 
 // processDATA indicates that what follows is the message body
-func (p *Proto) processDATA(r *bufio.Reader) {
+func (p *Proto) processDATA() {
 	// Ensure that there is at least one valid "to" address
 	if len(p.mailTo) == 0 {
 		p.writeReply(503, "RCPT must be invoked first")
@@ -101,19 +115,24 @@ func (p *Proto) processDATA(r *bufio.Reader) {
 	// found - put another way, continue until a line with only "." is
 	// encountered
 	p.writeReply(354, "continue until \\r\\n.\\r\\n")
+	lines := []string{}
 	for {
-		line, isPrefix, err := r.ReadLine()
-		// If an error occurred or a too-long line was received, quit
-		if err != nil || isPrefix {
+		l, err := p.readLine()
+		if err != nil {
 			break
 		}
-		// Check for end-of-transmission
-		if bytes.Equal(line, []byte(".")) {
-			// TODO: deliver message
+		// Check for end-of-transmission and send message if found
+		if bytes.Equal(l, []byte(".")) {
+			p.newMessage <- &Message{
+				From: p.mailFrom,
+				To:   p.mailTo,
+				Body: strings.Join(lines, "\r\n"),
+			}
 			p.reset()
 			p.writeReply(250, "message queued for delivery")
 			break
 		}
+		lines = append(lines, string(l))
 	}
 }
 
@@ -138,15 +157,13 @@ func (p *Proto) processQUIT() {
 func (p *Proto) run() {
 	defer p.conn.Close()
 	p.writeBanner()
-	r := bufio.NewReader(p.conn)
 	for {
-		line, isPrefix, err := r.ReadLine()
-		// If an error occurred or a too-long line was received, quit
-		if err != nil || isPrefix {
+		l, err := p.readLine()
+		if err != nil {
 			break
 		}
 		var (
-			lineParts = bytes.SplitN(line, []byte(" "), 2)
+			lineParts = bytes.SplitN(l, []byte(" "), 2)
 			cmd       = bytes.ToUpper(bytes.TrimSpace(lineParts[0]))
 			param     []byte
 		)
@@ -161,7 +178,7 @@ func (p *Proto) run() {
 		case "RCPT":
 			p.processRCPT(param)
 		case "DATA":
-			p.processDATA(r)
+			p.processDATA()
 		case "RSET":
 			p.processRSET()
 		case "NOOP":
@@ -176,12 +193,14 @@ func (p *Proto) run() {
 }
 
 // NewProto creates a new protocol instance for interacting with an SMTP
-// client using the provided connection. The banner is used for identification.
-func NewProto(conn net.Conn, banner string) *Proto {
+// client using the provided connection.
+func NewProto(config *Config, newMessage chan<- *Message, conn net.Conn) *Proto {
 	p := &Proto{
-		conn:   conn,
-		banner: banner,
-		mailTo: []string{},
+		config:     config,
+		conn:       conn,
+		reader:     bufio.NewReader(conn),
+		newMessage: newMessage,
+		mailTo:     []string{},
 	}
 	go p.run()
 	return p
