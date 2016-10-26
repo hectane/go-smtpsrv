@@ -11,27 +11,28 @@ import (
 	"time"
 )
 
-// Proto facilitates communication with an SMTP client. Each instance maintains
-// state for and receives commands from a single client.
-type Proto struct {
+// Client facilitates communication with an SMTP client. Each instance
+// maintains state for and receives commands from a single client.
+type Client struct {
 	config     *Config
 	conn       net.Conn
 	reader     *bufio.Reader
 	newMessage chan<- *Message
+	finished   chan<- *Client
 	mailFrom   string
 	mailTo     []string
 }
 
 // reset initializes all values to their defaults.
-func (p *Proto) reset() {
-	p.mailFrom = ""
-	p.mailTo = []string{}
+func (c *Client) reset() {
+	c.mailFrom = ""
+	c.mailTo = []string{}
 }
 
 // readLine obtains the next line from the client while observing the timeout.
-func (p *Proto) readLine() ([]byte, error) {
-	p.conn.SetReadDeadline(time.Now().Add(p.config.ReadTimeout))
-	line, isPrefix, err := p.reader.ReadLine()
+func (c *Client) readLine() ([]byte, error) {
+	c.conn.SetReadDeadline(time.Now().Add(c.config.ReadTimeout))
+	line, isPrefix, err := c.reader.ReadLine()
 	if err != nil || isPrefix {
 		return nil, err
 	}
@@ -40,96 +41,96 @@ func (p *Proto) readLine() ([]byte, error) {
 
 // writeReply contructs a reply from the reply code and message. The result is
 // then sent back to the client.
-func (p *Proto) writeReply(code int, message string) {
-	p.conn.Write([]byte(strconv.Itoa(code) + " " + message + "\r\n"))
+func (c *Client) writeReply(code int, message string) {
+	c.conn.Write([]byte(strconv.Itoa(code) + " " + message + "\r\n"))
 }
 
 // writeBanner sends the initial greeting to the client. The banner supplied by
 // the caller is combined with the name of this library.
-func (p *Proto) writeBanner() {
-	p.writeReply(220, fmt.Sprintf("%s [go-smtpsrv]", p.config.Banner))
+func (c *Client) writeBanner() {
+	c.writeReply(220, fmt.Sprintf("%s [go-smtpsrv]", c.config.Banner))
 }
 
 // processHELO responds to HELO or EHLO commands from the client. At this
 // point, no extensions are supported, so the reply to both commands are
 // identical. The banner used in the greeting is repeated here.
-func (p *Proto) processHELO() {
-	p.reset()
-	p.writeReply(250, p.config.Banner)
+func (c *Client) processHELO() {
+	c.reset()
+	c.writeReply(250, c.config.Banner)
 }
 
 // processMail is invoked with the address the email is being sent *from*. This
 // address might be used to indicate a failure if the message could not be sent
 // for some reason.
-func (p *Proto) processMAIL(b []byte) {
+func (c *Client) processMAIL(b []byte) {
 	// Ensure that this hasn't already been invoked
-	if len(p.mailFrom) != 0 {
-		p.writeReply(503, "MAIL already invoked")
+	if len(c.mailFrom) != 0 {
+		c.writeReply(503, "MAIL already invoked")
 		return
 	}
 	// The next five bytes must be "FROM:"
 	if !bytes.HasPrefix(bytes.ToUpper(b), []byte("FROM:")) {
-		p.writeReply(501, "syntax: \"MAIL FROM:<address>\"")
+		c.writeReply(501, "syntax: \"MAIL FROM:<address>\"")
 		return
 	}
 	// Validate the address
 	a, err := mail.ParseAddress(string(b[5:]))
 	if err != nil {
-		p.writeReply(501, err.Error())
+		c.writeReply(501, err.Error())
 		return
 	}
-	p.mailFrom = a.Address
-	p.writeReply(250, "ok")
+	c.mailFrom = a.Address
+	c.writeReply(250, "ok")
 }
 
 // processRCPT is invoked one or more times to specify the recipient(s) of the
 // message. It may only be invoked *after* MAIL.
-func (p *Proto) processRCPT(b []byte) {
+func (c *Client) processRCPT(b []byte) {
 	// Ensure that MAIL has been invoked
-	if len(p.mailFrom) == 0 {
-		p.writeReply(503, "MAIL must be invoked first")
+	if len(c.mailFrom) == 0 {
+		c.writeReply(503, "MAIL must be invoked first")
 		return
 	}
 	// The next three bytes must be "TO:"
 	if !bytes.HasPrefix(bytes.ToUpper(b), []byte("TO:")) {
-		p.writeReply(501, "syntax: \"RCPT TO:<address>\"")
+		c.writeReply(501, "syntax: \"RCPT TO:<address>\"")
 		return
 	}
 	// Validate the address
 	a, err := mail.ParseAddress(string(b[3:]))
 	if err != nil {
-		p.writeReply(501, err.Error())
+		c.writeReply(501, err.Error())
 	}
-	p.mailTo = append(p.mailTo, a.Address)
-	p.writeReply(250, "ok")
+	c.mailTo = append(c.mailTo, a.Address)
+	c.writeReply(250, "ok")
 }
 
 // processDATA indicates that what follows is the message body
-func (p *Proto) processDATA() {
+func (c *Client) processDATA() {
 	// Ensure that there is at least one valid "to" address
-	if len(p.mailTo) == 0 {
-		p.writeReply(503, "RCPT must be invoked first")
+	if len(c.mailTo) == 0 {
+		c.writeReply(503, "RCPT must be invoked first")
 		return
 	}
 	// Continue to read one line at a time until the "CRLF.CRLF" sequence is
 	// found - put another way, continue until a line with only "." is
 	// encountered
-	p.writeReply(354, "continue until \\r\\n.\\r\\n")
+	c.writeReply(354, "continue until \\r\\n.\\r\\n")
 	lines := []string{}
 	for {
-		l, err := p.readLine()
+		l, err := c.readLine()
 		if err != nil {
 			break
 		}
 		// Check for end-of-transmission and send message if found
 		if bytes.Equal(l, []byte(".")) {
-			p.newMessage <- &Message{
-				From: p.mailFrom,
-				To:   p.mailTo,
+			c.newMessage <- &Message{
+				From: c.mailFrom,
+				To:   c.mailTo,
 				Body: strings.Join(lines, "\r\n"),
 			}
-			p.reset()
-			p.writeReply(250, "message queued for delivery")
+			c.reset()
+			c.writeReply(250, "message queued for delivery")
 			break
 		}
 		lines = append(lines, string(l))
@@ -137,28 +138,28 @@ func (p *Proto) processDATA() {
 }
 
 // processRSET resets all of the state variables to their initial values.
-func (p *Proto) processRSET() {
-	p.reset()
-	p.writeReply(250, "ok")
+func (c *Client) processRSET() {
+	c.reset()
+	c.writeReply(250, "ok")
 }
 
 // processNOOP does absolutely nothing.
-func (p *Proto) processNOOP() {
-	p.writeReply(250, "ok")
+func (c *Client) processNOOP() {
+	c.writeReply(250, "ok")
 }
 
 // processQUIT sends a parting message to the client.
-func (p *Proto) processQUIT() {
-	p.writeReply(221, "bye")
+func (c *Client) processQUIT() {
+	c.writeReply(221, "bye")
 }
 
 // run greets the client and processes each of the commands transmitted in
 // turn until either the client disconnects or QUIT is issued.
-func (p *Proto) run() {
-	defer p.conn.Close()
-	p.writeBanner()
+func (c *Client) run() {
+	c.writeBanner()
+loop:
 	for {
-		l, err := p.readLine()
+		l, err := c.readLine()
 		if err != nil {
 			break
 		}
@@ -172,36 +173,44 @@ func (p *Proto) run() {
 		}
 		switch string(cmd) {
 		case "HELO", "EHLO":
-			p.processHELO()
+			c.processHELO()
 		case "MAIL":
-			p.processMAIL(param)
+			c.processMAIL(param)
 		case "RCPT":
-			p.processRCPT(param)
+			c.processRCPT(param)
 		case "DATA":
-			p.processDATA()
+			c.processDATA()
 		case "RSET":
-			p.processRSET()
+			c.processRSET()
 		case "NOOP":
-			p.processNOOP()
+			c.processNOOP()
 		case "QUIT":
-			p.processQUIT()
-			return
+			c.processQUIT()
+			break loop
 		default:
-			p.writeReply(502, "unsupported command")
+			c.writeReply(502, "unsupported command")
 		}
 	}
+	c.conn.Close()
+	c.finished <- c
 }
 
-// NewProto creates a new protocol instance for interacting with an SMTP
-// client using the provided connection.
-func NewProto(config *Config, newMessage chan<- *Message, conn net.Conn) *Proto {
-	p := &Proto{
+// NewClient creates a new Client instance for interacting with an SMTP client
+// using the provided connection.
+func NewClient(config *Config, newMessage chan<- *Message, finished chan<- *Client, conn net.Conn) *Client {
+	c := &Client{
 		config:     config,
 		conn:       conn,
 		reader:     bufio.NewReader(conn),
 		newMessage: newMessage,
+		finished:   finished,
 		mailTo:     []string{},
 	}
-	go p.run()
-	return p
+	go c.run()
+	return c
+}
+
+// Close immediately disconnects the socket.
+func (c *Client) Close() {
+	c.conn.Close()
 }

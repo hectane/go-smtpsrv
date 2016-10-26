@@ -2,30 +2,58 @@ package smtpsrv
 
 import (
 	"net"
+	"sync"
 )
 
-// Server accepts incoming SMTP connections and hands them off to Proto
+// Server accepts incoming SMTP connections and hands them off to Client
 // instances for processing.
 type Server struct {
 	// Receives new messages from clients
 	NewMessage <-chan *Message
 	newMessage chan *Message
-	closed     chan bool
+	finished   chan bool
 	config     *Config
 	listener   net.Listener
+
+	// Used for synchronizing shutdown - unfortunately, this is all necessary;
+	// the list monitors which clients are active so that shutdown can be
+	// performed upon request; the mutex guards access to the list
+	waitGroup      sync.WaitGroup
+	mutex          sync.Mutex
+	clients        []*Client
+	clientFinished chan *Client
 }
 
-// run implements the main loop for the server.
-func (s *Server) run() {
+// accept continues to receive incoming connections until shut down.
+func (s *Server) accept() {
 	for {
-		c, err := s.listener.Accept()
+		conn, err := s.listener.Accept()
 		if err != nil {
 			break
 		} else {
-			NewProto(s.config, s.newMessage, c)
+			c := NewClient(s.config, s.newMessage, s.clientFinished, conn)
+			s.waitGroup.Add(1)
+			s.mutex.Lock()
+			s.clients = append(s.clients, c)
+			s.mutex.Unlock()
 		}
 	}
-	s.closed <- true
+	s.finished <- true
+}
+
+// remove receives from the clientFinished channel.
+func (s *Server) remove() {
+	for p := range s.clientFinished {
+		s.mutex.Lock()
+		for i, v := range s.clients {
+			if v == p {
+				s.clients = append(s.clients[:i], s.clients[i+1:]...)
+				s.waitGroup.Done()
+				break
+			}
+		}
+		s.mutex.Unlock()
+	}
 }
 
 // NewServer creates a new server with the specified configuration.
@@ -37,19 +65,30 @@ func NewServer(config *Config) (*Server, error) {
 	var (
 		newMessage = make(chan *Message)
 		s          = &Server{
-			NewMessage: newMessage,
-			newMessage: newMessage,
-			closed:     make(chan bool),
-			config:     config,
-			listener:   l,
+			NewMessage:     newMessage,
+			newMessage:     newMessage,
+			finished:       make(chan bool),
+			config:         config,
+			listener:       l,
+			clientFinished: make(chan *Client),
 		}
 	)
-	go s.run()
+	go s.accept()
+	go s.remove()
 	return s, nil
 }
 
-// Close shuts down the server.
-func (s *Server) Close() {
+// Close shuts down the server and waits for all clients to disconnect. If
+// the force parameter is true, clients will be immediately disconnected.
+func (s *Server) Close(force bool) {
 	s.listener.Close()
-	<-s.closed
+	<-s.finished
+	if force {
+		s.mutex.Lock()
+		for _, v := range s.clients {
+			v.Close()
+		}
+		s.mutex.Unlock()
+	}
+	s.waitGroup.Wait()
 }
