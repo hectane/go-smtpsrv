@@ -31,7 +31,9 @@ func (c *Client) reset() {
 
 // readLine obtains the next line from the client while observing the timeout.
 func (c *Client) readLine() ([]byte, error) {
-	c.conn.SetReadDeadline(time.Now().Add(c.config.ReadTimeout))
+	if c.config.ReadTimeout != 0 {
+		c.conn.SetReadDeadline(time.Now().Add(c.config.ReadTimeout))
+	}
 	line, isPrefix, err := c.reader.ReadLine()
 	if err != nil || isPrefix {
 		return nil, err

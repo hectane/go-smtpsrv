@@ -28,9 +28,7 @@ func TestResponse(t *testing.T) {
 	var (
 		m      *Message
 		s, err = NewServer(&Config{
-			Addr:        "127.0.0.1:0",
-			Banner:      "Banner",
-			ReadTimeout: 100 * time.Millisecond,
+			Addr: "127.0.0.1:0",
 		})
 	)
 	if err != nil {
@@ -97,7 +95,7 @@ func TestResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Shut 'er down
-	defer s.Close(false)
+	s.Close(false)
 	// Ensure a message was received
 	if m == nil {
 		t.Fatal(errors.New("message expected"))
